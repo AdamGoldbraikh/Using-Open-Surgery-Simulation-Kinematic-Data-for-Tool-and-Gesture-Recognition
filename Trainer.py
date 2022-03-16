@@ -1,7 +1,7 @@
 # parts of the code were adapted from: https://github.com/sj-li/MS-TCN2?utm_source=catalyzex.com
 
 from model import *
-import sys
+import os
 from torch import optim
 import math
 import pandas as pd
@@ -15,31 +15,24 @@ from scipy import signal
 
 
 class Trainer:
-    def __init__(self, num_layers_PG, num_layers_R, num_R, num_f_maps, dim, num_classes_list, offline_mode=False, tau=16, lambd=0.15, task="gestures", device="cuda",
-                 network='MS-TCN2',debagging=False):
+    def __init__(self, num_layers_PG, num_layers_R, num_R, num_f_maps, dim, num_classes_list, offline_mode=False, tau=16, lambd=0.15,hidden_dim_rnn=64,num_layers_rnn=3,dropout=0.5, task="gestures", device="cuda",
+                 network='MS-TCN2',hyper_parameter_tuning=False,debagging=False):
 
         if network == 'MS-TCN2':
-            self.model = MST_TCN2(num_layers_PG, num_layers_R, num_R, num_f_maps, dim, num_classes_list,offline_mode=offline_mode)
-        elif network == 'MS-TCN2_ISR':
-            self.model = MST_TCN2_ISR(num_layers_PG, num_layers_R, num_R, num_f_maps, dim, num_classes_list,offline_mode=offline_mode)
+            self.model = MST_TCN2(num_layers_PG, num_layers_R, num_R, num_f_maps,dim, num_classes_list,dropout=dropout,offline_mode=offline_mode)
         elif network == 'LSTM':
-            self.model = MT_RNN_dp("LSTM", input_dim=dim, hidden_dim=64, num_classes_list=num_classes_list,
-                                bidirectional=offline_mode, dropout=0.4,num_layers=3)
+            self.model = MT_RNN("LSTM", input_dim=dim, hidden_dim=hidden_dim_rnn, num_classes_list=num_classes_list,
+                                bidirectional=offline_mode, dropout=dropout,num_layers=num_layers_rnn)
 
         elif network == 'GRU':
-            self.model = MT_RNN_dp("GRU", input_dim=dim, hidden_dim=128, num_classes_list=num_classes_list,
-                                bidirectional=offline_mode, dropout=0.3,num_layers=3)
-        elif network == 'MS-LSTM-TCN':
-            self.model = RNN_MST_TCN2("LSTM",256, num_layers_R, num_R, num_f_maps, dim, num_classes_list, offline_mode,dropout_TCN=0.5,dropout_RNN=0.9)
-        elif network == 'MS-TCN-LSTM':
-            self.model = MST_TCN2_RNN(RNN_type='LSTM',num_layers_PG=num_layers_PG,hidden_dim=256,num_R= num_R,num_f_maps= num_f_maps, dim=dim, num_classes_list=num_classes_list, offline_mode=offline_mode)
-        elif network == 'MS-GRU-TCN':
-            self.model = RNN_MST_TCN2("GRU",256, num_layers_R, num_R, num_f_maps, dim, num_classes_list, offline_mode,dropout_TCN=0.5,dropout_RNN=0.9)
-        elif network == 'MS-TCN-GRU':
-            self.model = MST_TCN2_RNN(RNN_type='GRU',num_layers_PG=num_layers_PG,hidden_dim=256,num_R= num_R,num_f_maps= num_f_maps, dim=dim, num_classes_list=num_classes_list, offline_mode=offline_mode)
+            self.model = MT_RNN("GRU", input_dim=dim, hidden_dim=hidden_dim_rnn, num_classes_list=num_classes_list,
+                                bidirectional=offline_mode, dropout=dropout,num_layers=num_layers_rnn)
 
         else:
             raise NotImplemented
+        self.number_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
+
         self.debagging =debagging
         self.network = network
         self.device = device
@@ -50,10 +43,12 @@ class Trainer:
         self.tau = tau
         self.lambd = lambd
         self.task =task
+        self.hyper_parameter_tuning =hyper_parameter_tuning
 
 
     def train(self, save_dir, batch_gen, num_epochs, batch_size, learning_rate, eval_dict, args):
-
+        best_valid_results =None
+        Max_F1_macro = 0
         number_of_seqs = len(batch_gen.list_of_train_examples)
         number_of_batches = math.ceil(number_of_seqs / batch_size)
 
@@ -84,11 +79,12 @@ class Trainer:
 
             while batch_gen.has_next():
                 if self.task == "multi-taks":
-                    batch_input, batch_target_left, batch_target_right, batch_target_gestures, mask = batch_gen.next_batch(
+                    batch_input, batch_target_left, batch_target_right, batch_target_gestures, mask_gesture,mask_tools = batch_gen.next_batch(
                         batch_size)
-                    batch_input, batch_target_left, batch_target_right, batch_target_gestures, mask = batch_input.to(
+                    batch_input, batch_target_left, batch_target_right, batch_target_gestures, mask_gesture,mask_tools = batch_input.to(
                         self.device), batch_target_left.to(self.device), batch_target_right.to(
-                        self.device), batch_target_gestures.to(self.device), mask.to(self.device)
+                        self.device), batch_target_gestures.to(self.device), mask_gesture.to(self.device),mask_tools.to(self.device)
+                    mask =mask_gesture
 
                 elif self.task == "tools":
                     batch_input, batch_target_left, batch_target_right, mask = batch_gen.next_batch(batch_size)
@@ -101,20 +97,22 @@ class Trainer:
 
                 optimizer.zero_grad()
                 predictions1, predictions2, predictions3 =[],[],[]
+                lengths = torch.sum(mask[:, 0, :], dim=1).to(dtype=torch.int64).to(device='cpu')
+
                 if self.task == "multi-taks":
                     if self.network == "LSTM" or self.network == "GRU":
-                        lengths = torch.sum(mask[:, 0, :], dim=1).to(dtype=torch.int64).to(device='cpu')
+
                         predictions1, predictions2, predictions3 = self.model(batch_input, lengths)
-                        predictions1 = (predictions1 * mask).unsqueeze_(0)
-                        predictions2 = (predictions2 * mask).unsqueeze_(0)
-                        predictions3 = (predictions3 * mask).unsqueeze_(0)
+                        predictions1 = (predictions1 * mask_gesture).unsqueeze_(0)
+                        predictions2 = (predictions2 * mask_tools).unsqueeze_(0)
+                        predictions3 = (predictions3 * mask_tools).unsqueeze_(0)
 
                     else:
                         predictions1, predictions2, predictions3 = self.model(batch_input)
 
                 elif self.task == "tools":
                     if self.network == "LSTM" or self.network == "GRU":
-                        lengths = torch.sum(mask[:, 0, :], dim=1).to(dtype=torch.int64).to(device='cpu')
+                        # lengths = torch.sum(mask[:, 0, :], dim=1).to(dtype=torch.int64).to(device='cpu')
                         predictions2, predictions3 = self.model(batch_input, lengths)
                         predictions2 = (predictions2 * mask).unsqueeze_(0)
                         predictions3 = (predictions3 * mask).unsqueeze_(0)
@@ -123,7 +121,7 @@ class Trainer:
                         predictions2, predictions3 = self.model(batch_input)
                 else:
                     if self.network == "LSTM" or self.network == "GRU":
-                        lengths = torch.sum(mask[:, 0, :], dim=1).to(dtype=torch.int64).to(device='cpu')
+                        # lengths = torch.sum(mask[:, 0, :], dim=1).to(dtype=torch.int64).to(device='cpu')
                         predictions1 = self.model(batch_input, lengths)
                         predictions1 = (predictions1[0] * mask).unsqueeze_(0)
                     else:
@@ -159,8 +157,10 @@ class Trainer:
                 optimizer.step()
                 if self.task == "multi-taks" or self.task == "gestures":
                     _, predicted1 = torch.max(predictions1[-1].data, 1)
-                    correct1 += ((predicted1 == batch_target_gestures).float().squeeze(1)).sum().item()
-                    total1 += predicted1.shape[1]
+                    for i in range(len(lengths)):
+
+                        correct1 += (predicted1[i][:lengths[i]] == batch_target_gestures[i][:lengths[i]]).float().sum().item()
+                        total1 += lengths[i]
 
                 if self.task == "multi-taks" or self.task == "tools":
 
@@ -175,9 +175,6 @@ class Trainer:
 
             batch_gen.reset()
             pbar.close()
-            if not self.debagging:
-                torch.save(self.model.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".model")
-                torch.save(optimizer.state_dict(), save_dir + "/epoch-" + str(epoch + 1) + ".opt")
             dt_string = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
             if self.task == "multi-taks":
                 print(colored(dt_string, 'green', attrs=[
@@ -214,16 +211,51 @@ class Trainer:
             train_results_list.append(train_results)
 
             if (epoch) % eval_rate == 0:
-                print(colored("epoch: " + str(epoch + 1) + " model evaluation", 'red', attrs=['reverse', 'bold']))
-                results = {"epoch": epoch}
+                print(colored("epoch: " + str(epoch + 1) + " model evaluation", 'red', attrs=['bold']))
+                results = {"epoch": epoch + 1}
                 results.update(self.evaluate(eval_dict, batch_gen))
                 eval_results_list.append(results)
+                if self.task == "gestures":
+                   if results['F1-macro gesture'] >= Max_F1_macro:
+                    Max_F1_macro =results['F1-macro gesture']
+                    best_valid_results = results
+                    if not self.debagging and not self.hyper_parameter_tuning:
+                        torch.save(self.model.state_dict(), save_dir + "/"+self.network+"_"+self.task + ".model")
+                        torch.save(optimizer.state_dict(), save_dir + "/"+self.network+"_"+self.task + ".opt")
+
+                if self.task == "tools":
+                   if (results['F1-macro left']  + results['F1-macro right'])/2 >= Max_F1_macro:
+                    Max_F1_macro = (results['F1-macro left']  + results['F1-macro right'])/2
+                    best_valid_results = results
+                    if not self.debagging and not self.hyper_parameter_tuning:
+                        torch.save(self.model.state_dict(), save_dir + "/"+self.network+"_"+self.task + ".model")
+                        torch.save(optimizer.state_dict(), save_dir + "/"+self.network+"_"+self.task + ".opt")
+
+                if self.task == "multi-taks":
+                   if (results['F1-macro gesture'] + results['F1-macro left'] + results['F1-macro right'])/3 >= Max_F1_macro:
+                    Max_F1_macro =(results['F1-macro gesture'] + results['F1-macro left'] + results['F1-macro right'])/3
+                    best_valid_results = results
+                    if not self.debagging and not self.hyper_parameter_tuning:
+                        torch.save(self.model.state_dict(), save_dir + "/"+self.network+"_"+self.task + ".model")
+                        torch.save(optimizer.state_dict(), save_dir + "/"+self.network+"_"+self.task + ".opt")
+
+
                 if args.upload is True:
                     wandb.log(results)
 
-        return eval_results_list, train_results_list
+        ## test HERE!!
+        if self.hyper_parameter_tuning:
+            return best_valid_results, eval_results_list, train_results_list, []
+        else:
+            best_epoch = best_valid_results['epoch']
+            print(colored("model testing based on epoch: " + str(best_epoch), 'green', attrs=['bold']))
 
-    def evaluate(self, eval_dict, batch_gen):
+            self.model.load_state_dict(torch.load(save_dir + "/"+self.network+"_"+self.task + ".model"))
+            test_results = self.evaluate(eval_dict, batch_gen,True)
+            test_results["best_epch"] = [best_epoch] * len(test_results['list_of_seq'])
+            return best_valid_results, eval_results_list, train_results_list, test_results
+
+    def evaluate(self, eval_dict, batch_gen,is_test=False):
         results = {}
         device = eval_dict["device"]
         features_path = eval_dict["features_path"]
@@ -237,14 +269,18 @@ class Trainer:
         self.model.eval()
         with torch.no_grad():
             self.model.to(device)
-            list_of_vids = batch_gen.list_of_valid_examples
+            if not is_test:
+                list_of_vids = batch_gen.list_of_valid_examples
+            else:
+                list_of_vids = batch_gen.list_of_test_examples
+
             recognition1_list = []
             recognition2_list = []
             recognition3_list = []
 
             for seq in list_of_vids:
                 # print vid
-                features = np.load(features_path + seq.split('.')[0] + '.npy')
+                features = np.load(os.path.join(features_path,seq.split('.')[0] + '.npy'))
                 if batch_gen.normalization == "Min-max":
                     numerator = features.T - batch_gen.min
                     denominator = batch_gen.max - batch_gen.min
@@ -265,7 +301,17 @@ class Trainer:
                 input_x.unsqueeze_(0)
                 input_x = input_x.to(device)
                 if self.task == "multi-taks":
-                    predictions1, predictions2, predictions3 = self.model(input_x)
+                    if self.network == "LSTM" or self.network == "GRU":
+                        predictions1,predictions2, predictions3 = self.model(input_x, torch.tensor([features.shape[1]]))
+                        predictions1 = predictions1.unsqueeze_(0)
+                        predictions1 = torch.nn.Softmax(dim=2)(predictions1)
+                        predictions2 = predictions2.unsqueeze_(0)
+                        predictions2 = torch.nn.Softmax(dim=2)(predictions2)
+                        predictions3 = predictions3.unsqueeze_(0)
+                        predictions3 = torch.nn.Softmax(dim=2)(predictions3)
+
+                    else:
+                        predictions1, predictions2, predictions3 = self.model(input_x)
                 elif self.task == "tools":
                     if self.network == "LSTM" or self.network == "GRU":
                         predictions2, predictions3 = self.model(input_x, torch.tensor([features.shape[1]]))
@@ -323,7 +369,9 @@ class Trainer:
                 print("gestures results")
                 results1, _ = metric_calculation(ground_truth_path=ground_truth_path_gestures,
                                                  recognition_list=recognition1_list, list_of_videos=list_of_vids,
-                                                 suffix="gesture")
+                                                 suffix="gesture",is_test=is_test)
+
+
                 results.update(results1)
 
             if self.task == "multi-taks" or self.task == "tools":
@@ -331,14 +379,16 @@ class Trainer:
                 print("right hand results")
                 results2, _ = metric_calculation(ground_truth_path=ground_truth_path_right,
                                                  recognition_list=recognition2_list, list_of_videos=list_of_vids,
-                                                 suffix="right")
+                                                 suffix="right",is_test=is_test)
                 print("left hand results")
                 results3, _ = metric_calculation(ground_truth_path=ground_truth_path_left,
                                                  recognition_list=recognition3_list, list_of_videos=list_of_vids,
-                                                 suffix="left")
+                                                 suffix="left",is_test=is_test)
                 results.update(results2)
                 results.update(results3)
 
+            if is_test:
+                results["list_of_seq"] = list_of_vids
             self.model.train()
             return results
 

@@ -34,6 +34,7 @@ class BatchGenerator(object):
         self.split_num = split_num
         self.list_of_train_examples = list()
         self.list_of_valid_examples = list()
+        self.list_of_test_examples = list()
         self.index = 0
         self.num_classes_gestures = num_classes_gestures
         self.num_classes_tools = num_classes_tools
@@ -69,14 +70,28 @@ class BatchGenerator(object):
 
     def read_data(self):
         self.list_of_train_examples =[]
+        number_of_folds =0
+        for file in os.listdir(self.folds_folder):
+            filename = os.fsdecode(file)
+            if filename.endswith(".txt") and "fold" in filename:
+                number_of_folds = number_of_folds + 1
+
         for file in os.listdir(self.folds_folder):
             filename = os.fsdecode(file)
             if filename.endswith(".txt") and "fold" in filename:
                 if str(self.split_num) in filename:
                     file_ptr = open(os.path.join(self.folds_folder, filename), 'r')
-                    self.list_of_valid_examples = file_ptr.read().split('\n')[:-1]
+                    self.list_of_test_examples = file_ptr.read().split('\n')[:-1]
                     file_ptr.close()
+                    random.shuffle(self.list_of_test_examples)
+                elif str((self.split_num + 1) % number_of_folds) in filename:
+                    file_ptr = open(os.path.join(self.folds_folder, filename), 'r')
+                    list_of_examples =  file_ptr.read().split('\n')[:-1]
+                    self.list_of_valid_examples = list_of_examples[0:12]
                     random.shuffle(self.list_of_valid_examples)
+                    self.list_of_train_examples = self.list_of_train_examples + list_of_examples[12:]
+
+                    file_ptr.close()
                 else:
                     file_ptr = open(os.path.join(self.folds_folder, filename), 'r')
                     self.list_of_train_examples = self.list_of_train_examples + file_ptr.read().split('\n')[:-1]
@@ -84,6 +99,7 @@ class BatchGenerator(object):
                 continue
             else:
                 continue
+
         random.shuffle(self.list_of_train_examples)
 
 
@@ -110,7 +126,7 @@ class BatchGenerator(object):
         batch_target_right = []
 
         for seq in batch:
-            features = np.load(self.features_path + seq.split('.')[0] + '.npy')
+            features = np.load(os.path.join(self.features_path,seq.split('.')[0] + '.npy') )
 
             if self.normalization == "Min-max":
                 numerator =features.T - self.min
@@ -131,7 +147,7 @@ class BatchGenerator(object):
 
 
             if self.task == "gestures":
-                file_ptr = open(self.gt_path_gestures + seq.split('.')[0] + '.txt', 'r')
+                file_ptr = open(os.path.join(self.gt_path_gestures,seq.split('.')[0] + '.txt'),'r')
                 gt_source = file_ptr.read().split('\n')[:-1]
                 content = self.pars_ground_truth(gt_source)
                 classes_size = min(np.shape(features)[1], len(content))
@@ -143,10 +159,10 @@ class BatchGenerator(object):
 
 
             elif self.task == "tools":
-                file_ptr_right = open(self.gt_path_tools_right + seq.split('.')[0] + '.txt', 'r')
+                file_ptr_right = open(os.path.join(self.gt_path_tools_right, seq.split('.')[0] + '.txt'), 'r')
                 gt_source_right = file_ptr_right.read().split('\n')[:-1]
                 content_right = self.pars_ground_truth(gt_source_right)
-                file_ptr_left = open(self.gt_path_tools_left + seq.split('.')[0] + '.txt', 'r')
+                file_ptr_left = open(os.path.join(self.gt_path_tools_left, seq.split('.')[0] + '.txt'), 'r')
                 gt_source_left = file_ptr_left.read().split('\n')[:-1]
                 content_left = self.pars_ground_truth(gt_source_left)
 
@@ -164,7 +180,7 @@ class BatchGenerator(object):
                 batch_target_left.append(classes_left[::self.sample_rate])
 
             elif self.task == "multi-taks":
-                file_ptr = open(self.gt_path_gestures + seq.split('.')[0] + '.txt', 'r')
+                file_ptr = open(os.path.join(self.gt_path_gestures,seq.split('.')[0] + '.txt'), 'r')
                 gt_source = file_ptr.read().split('\n')[:-1]
                 content = self.pars_ground_truth(gt_source)
                 classes_size = min(np.shape(features)[1], len(content))
@@ -174,7 +190,7 @@ class BatchGenerator(object):
                     classes[i] = self.actions_dict_gestures[content[i]]
                 batch_target_gestures.append(classes[::self.sample_rate])
 
-                file_ptr_right = open(self.gt_path_tools_right + seq.split('.')[0] + '.txt', 'r')
+                file_ptr_right = open(os.path.join(self.gt_path_tools_right,seq.split('.')[0] + '.txt'), 'r')
                 gt_source_right = file_ptr_right.read().split('\n')[:-1]
                 content_right = self.pars_ground_truth(gt_source_right)
                 classes_size_right = min(np.shape(features)[1], len(content_right))
@@ -184,7 +200,7 @@ class BatchGenerator(object):
 
                 batch_target_right.append(classes_right[::self.sample_rate])
 
-                file_ptr_left = open(self.gt_path_tools_left + seq.split('.')[0] + '.txt', 'r')
+                file_ptr_left = open(os.path.join(self.gt_path_tools_left, seq.split('.')[0] + '.txt'), 'r')
                 gt_source_left = file_ptr_left.read().split('\n')[:-1]
                 content_left = self.pars_ground_truth(gt_source_left)
                 classes_size_left = min(np.shape(features)[1], len(content_left))
@@ -245,7 +261,8 @@ class BatchGenerator(object):
             batch_target_tensor_right = torch.ones(len(batch_input), max(length_of_sequences), dtype=torch.long) * (-100)
             batch_target_tensor_gestures = torch.ones(len(batch_input), max(length_of_sequences), dtype=torch.long)*(-100)
 
-            mask = torch.zeros(len(batch_input), self.num_classes_gestures, max(length_of_sequences), dtype=torch.float)
+            mask_gesture = torch.zeros(len(batch_input), self.num_classes_gestures, max(length_of_sequences), dtype=torch.float)
+            mask_tools = torch.zeros(len(batch_input), self.num_classes_tools, max(length_of_sequences), dtype=torch.float)
 
 
             for i in range(len(batch_input)):
@@ -253,10 +270,11 @@ class BatchGenerator(object):
                 batch_target_tensor_left[i, :np.shape(batch_target_left[i])[0]] = torch.from_numpy(batch_target_left[i][:batch_target_tensor_left.shape[1]])
                 batch_target_tensor_right[i, :np.shape(batch_target_right[i])[0]] = torch.from_numpy(batch_target_right[i][:batch_target_tensor_right.shape[1]])
                 batch_target_tensor_gestures[i, :np.shape(batch_target_gestures[i])[0]] = torch.from_numpy(batch_target_gestures[i][:batch_target_tensor_gestures.shape[1]])
-                # mask[i, :, :np.shape(batch_target_gestures[i])[0]] = torch.ones(self.num_classes_gestures, np.shape(batch_target_gestures[i])[0])
+                mask_gesture[i, :, :length_of_sequences[i]] = torch.ones(self.num_classes_gestures, length_of_sequences[i])
+                mask_tools[i, :, :length_of_sequences[i]] = torch.ones(self.num_classes_tools, length_of_sequences[i])
 
 
-            return batch_input_tensor, batch_target_tensor_left ,batch_target_tensor_right,batch_target_tensor_gestures, mask
+            return batch_input_tensor, batch_target_tensor_left ,batch_target_tensor_right,batch_target_tensor_gestures, mask_gesture,mask_tools
     ##### this is supports one and two heads#############
 
     def next_batch_backup(self, batch_size):

@@ -40,7 +40,6 @@ def plot_seq_gestures(all_recogs, all_gt,task,best):
                 max_r = r
                 max_gt = gt
 
-    names= ['TCN-LSTM',"Ground Truth"]
     gestures_list_min=[min_r,min_gt]
     gestures_list_max=[max_r,max_gt]
     if best:
@@ -67,7 +66,10 @@ def plot_seq_gestures(all_recogs, all_gt,task,best):
 
     plt.tight_layout()
     plt.show()
-    plot_legend(gesture_descriptions,num_classes =vmax_,cmap_=cmap_)
+    # plot_legend(gesture_descriptions,num_classes =vmax_,cmap_=cmap_)
+
+
+
 
 
 

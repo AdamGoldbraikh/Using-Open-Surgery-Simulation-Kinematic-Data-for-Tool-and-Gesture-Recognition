@@ -7,6 +7,8 @@ import numpy as np
 import argparse
 from termcolor import colored, cprint
 from sklearn.metrics import f1_score, accuracy_score, recall_score, precision_score, confusion_matrix
+import statistics as st
+
 #https://scikit-learn.org/stable/modules/generated/sklearn.metrics.confusion_matrix.html
 #https://scikit-learn.org/stable/modules/classes.html#module-sklearn.metrics
 
@@ -103,7 +105,159 @@ def pars_ground_truth(gt_source):
     return contant
 
 
-def metric_calculation(ground_truth_path,recognition_list,list_of_videos,suffix=""):
+def metric_calculation(ground_truth_path,recognition_list,list_of_videos,suffix="",is_test=False):
+    overlap = [.1, .25, .5]
+    results_dict = {"Acc "+suffix:None, "Edit "+suffix:None,"F1-macro "+suffix:None,
+                    F"F1@{int(overlap[0] * 100) } "+suffix:None, F"F1@{int(overlap[1] * 100) } "+suffix:None,
+                    F"F1@{int(overlap[2] * 100)} "+suffix:None
+                    }
+    results_dict_of_lists = {"Acc "+suffix:None, "Edit "+suffix:None,"F1-macro "+suffix:None,
+                    F"F1@{int(overlap[0] * 100) } "+suffix:None, F"F1@{int(overlap[1] * 100) } "+suffix:None,
+                    F"F1@{int(overlap[2] * 100)} "+suffix:None
+                    }
+
+    gt_list =[]
+    acc_list = []
+    f1_macro_list =[]
+    edit_list = []
+    f1_10_list= []
+    f1_25_list= []
+    f1_50_list= []
+
+    for i, seq in enumerate(list_of_videos):
+        file_ptr = open(os.path.join(ground_truth_path,seq.split('.')[0] + '.txt'), 'r')
+        gt_source = file_ptr.read().split('\n')[:-1]
+        gt_content = pars_ground_truth(gt_source)
+
+        gt_list.append(gt_content)
+        recog_content = recognition_list[i]
+        number_of_frames_to_compare = min(len(gt_content),len(recog_content))
+        acc_list.append(100*(sum(gt_content[:number_of_frames_to_compare] == recog_content[:number_of_frames_to_compare]) / number_of_frames_to_compare))
+        edit_list.append(edit_score(recog_content, gt_content))
+        f1_macro_list.append(100 * f1_score(gt_content[:number_of_frames_to_compare], recog_content[:number_of_frames_to_compare], average='macro'))
+
+        for s in range(len(overlap)):
+            tp1, fp1, fn1 = f_score(recog_content, gt_content, overlap[s])
+            precision = float(0)
+            recall =float(0)
+            f1 =float(0)
+            if tp1 + fp1 >0:
+                precision = tp1 / float(tp1 + fp1)
+            if tp1 + fn1 >0:
+                recall = tp1 / float(tp1 + fn1)
+            if precision + recall >0:
+                f1 = 2.0 * (precision * recall) / (precision + recall)
+            f1 = np.nan_to_num(f1) * 100
+            if s == 0:
+                f1_10_list.append(f1)
+            if s == 1:
+                f1_25_list.append(f1)
+            if s == 2:
+                f1_50_list.append(f1)
+
+
+    color = "yellow"
+    print(colored("Acc: %.4f" % st.mean(acc_list),color))
+    results_dict["Acc "+suffix] = st.mean(acc_list)
+    print(colored("F1-macro: %.4f" % st.mean(f1_macro_list),color))
+    results_dict["F1-macro "+suffix] = st.mean(f1_macro_list)
+    print(colored("Edit: %.4f" % st.mean(edit_list),color))
+    results_dict["Edit "+suffix] = st.mean(edit_list)
+    print(colored('F1@%0.0f: %.4f' % (overlap[0]*100, st.mean(f1_10_list)),color))
+    results_dict[F"F1@{int(overlap[0] * 100)} " + suffix] = st.mean(f1_10_list)
+    print(colored('F1@%0.0f: %.4f' % (overlap[1]*100, st.mean(f1_25_list)),color))
+    results_dict[F"F1@{int(overlap[1] * 100)} " + suffix] = st.mean(f1_25_list)
+    print(colored('F1@%0.0f: %.4f' % (overlap[2]*100, st.mean(f1_50_list)),color))
+    results_dict[F"F1@{int(overlap[2] * 100)} " + suffix] = st.mean(f1_50_list)
+    results_dict_of_lists["Acc "+suffix] = acc_list
+    results_dict_of_lists["F1-macro "+suffix] = f1_macro_list
+    results_dict_of_lists["Edit "+suffix] = edit_list
+    results_dict_of_lists[F"F1@{int(overlap[0] * 100)} " + suffix] = f1_10_list
+    results_dict_of_lists[F"F1@{int(overlap[1] * 100)} " + suffix] = f1_25_list
+    results_dict_of_lists[F"F1@{int(overlap[2] * 100)} " + suffix] = f1_50_list
+    if not is_test:
+        return results_dict, gt_list
+    if is_test:
+        return results_dict_of_lists, gt_list
+
+
+def metric_calculation_analysis(gt_list,recognition_list,sampling=1,suffix=""):
+    overlap = [.1, .25, .5]
+    results_dict = {"Acc "+suffix:None, "Edit "+suffix:None,"F1-macro "+suffix:None,
+                    F"F1@{int(overlap[0] * 100) } "+suffix:None, F"F1@{int(overlap[1] * 100) } "+suffix:None,
+                    F"F1@{int(overlap[2] * 100)} "+suffix:None
+                    }
+    results_dict_of_lists = {"Acc "+suffix:None, "Edit "+suffix:None,"F1-macro "+suffix:None,
+                    F"F1@{int(overlap[0] * 100) } "+suffix:None, F"F1@{int(overlap[1] * 100) } "+suffix:None,
+                    F"F1@{int(overlap[2] * 100)} "+suffix:None
+                    }
+
+    acc_list = []
+    f1_macro_list =[]
+    edit_list = []
+    f1_10_list= []
+    f1_25_list= []
+    f1_50_list= []
+
+    for i in range(len(recognition_list)):
+        gt_content_ = gt_list[i]
+        recog_content_ = recognition_list[i]
+
+
+        for j in range(len(recog_content_)):
+            gt_content = gt_content_[j]
+            recog_content = recog_content_[j]
+            gt_content = gt_content[::sampling]
+            recog_content = recog_content[::sampling]
+
+            number_of_frames_to_compare = min(len(gt_content),len(recog_content))
+            acc_list.append(100*(sum(gt_content[:number_of_frames_to_compare] == recog_content[:number_of_frames_to_compare]) / number_of_frames_to_compare))
+            edit_list.append(edit_score(recog_content, gt_content))
+            f1_macro_list.append(100 * f1_score(gt_content[:number_of_frames_to_compare], recog_content[:number_of_frames_to_compare], average='macro'))
+
+            for s in range(len(overlap)):
+                tp1, fp1, fn1 = f_score(recog_content, gt_content, overlap[s])
+                precision = float(0)
+                recall =float(0)
+                f1 =float(0)
+                if tp1 + fp1 >0:
+                    precision = tp1 / float(tp1 + fp1)
+                if tp1 + fn1 >0:
+                    recall = tp1 / float(tp1 + fn1)
+                if precision + recall >0:
+                    f1 = 2.0 * (precision * recall) / (precision + recall)
+                f1 = np.nan_to_num(f1) * 100
+                if s == 0:
+                    f1_10_list.append(f1)
+                if s == 1:
+                    f1_25_list.append(f1)
+                if s == 2:
+                    f1_50_list.append(f1)
+
+
+    color = "yellow"
+    print(colored("Acc: %.4f" % st.mean(acc_list),color))
+    results_dict["Acc "+suffix] = st.mean(acc_list)
+    print(colored("F1-macro: %.4f" % st.mean(f1_macro_list),color))
+    results_dict["F1-macro "+suffix] = st.mean(f1_macro_list)
+    print(colored("Edit: %.4f" % st.mean(edit_list),color))
+    results_dict["Edit "+suffix] = st.mean(edit_list)
+    print(colored('F1@%0.0f: %.4f' % (overlap[0]*100, st.mean(f1_10_list)),color))
+    results_dict[F"F1@{int(overlap[0] * 100)} " + suffix] = st.mean(f1_10_list)
+    print(colored('F1@%0.0f: %.4f' % (overlap[1]*100, st.mean(f1_25_list)),color))
+    results_dict[F"F1@{int(overlap[1] * 100)} " + suffix] = st.mean(f1_25_list)
+    print(colored('F1@%0.0f: %.4f' % (overlap[2]*100, st.mean(f1_50_list)),color))
+    results_dict[F"F1@{int(overlap[2] * 100)} " + suffix] = st.mean(f1_50_list)
+    results_dict_of_lists["Acc "+suffix] = acc_list
+    results_dict_of_lists["F1-macro "+suffix] = f1_macro_list
+    results_dict_of_lists["Edit "+suffix] = edit_list
+    results_dict_of_lists[F"F1@{int(overlap[0] * 100)} " + suffix] = f1_10_list
+    results_dict_of_lists[F"F1@{int(overlap[1] * 100)} " + suffix] = f1_25_list
+    results_dict_of_lists[F"F1@{int(overlap[2] * 100)} " + suffix] = f1_50_list
+    return results_dict_of_lists
+
+
+def metric_calculation_backup(ground_truth_path,recognition_list,list_of_videos,suffix=""):
     overlap = [.1, .25, .5]
     results_dict = {"Acc "+suffix:None, "Edit "+suffix:None,"F1-macro "+suffix:None,
                     F"F1@{int(overlap[0] * 100) } "+suffix:None, F"F1@{int(overlap[1] * 100) } "+suffix:None,
@@ -165,8 +319,6 @@ def metric_calculation(ground_truth_path,recognition_list,list_of_videos,suffix=
         print(colored('F1@%0.2f: %.4f' % (overlap[s], f1),color))
 
     return results_dict, gt_list
-
-
 
 
 def main():

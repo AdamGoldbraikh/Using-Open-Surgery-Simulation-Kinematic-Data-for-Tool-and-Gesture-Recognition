@@ -14,6 +14,9 @@ from sklearn.metrics import confusion_matrix
 import seaborn as sns
 import matplotlib.pylab as plt
 import matplotlib.font_manager
+import pandas as pd
+from metrics import*
+
 
 
 def get_gt(ground_truth_path,list_of_videos):
@@ -27,11 +30,11 @@ def get_gt(ground_truth_path,list_of_videos):
         gt_list.append(gt_content)
     return gt_list
 
-def predict(trainer, model_dir, features_path, list_of_vids, epoch, actions_dict_gestures,actions_dict_tools, device, sample_rate,task,network):
+def predict(trainer, model_dir, features_path, list_of_vids, actions_dict_gestures,actions_dict_tools, device, sample_rate,task,network):
     trainer.model.eval()
     with torch.no_grad():
         trainer.model.to(device)
-        trainer.model.load_state_dict(torch.load(model_dir + "/epoch-" + str(epoch) + ".model"))
+        trainer.model.load_state_dict(torch.load(model_dir + "/" + network +"_" + task + ".model"))
         recognition1_list = []
         recognition2_list = []
         recognition3_list = []
@@ -58,10 +61,20 @@ def predict(trainer, model_dir, features_path, list_of_vids, epoch, actions_dict
                 input_x.unsqueeze_(0)
                 input_x = input_x.to(device)
                 if task == "multi-taks":
-                    predictions1, predictions2, predictions3 = trainer.model(input_x)
+                    if network == "LSTM" or network == "GRU":
+                        predictions1, predictions2, predictions3 = trainer.model(input_x,torch.tensor([features.shape[1]]))
+                        predictions1 = predictions1.unsqueeze_(0)
+                        predictions1 = torch.nn.Softmax(dim=2)(predictions1)
+
+                        predictions2 = predictions2.unsqueeze_(0)
+                        predictions2 = torch.nn.Softmax(dim=2)(predictions2)
+                        predictions3 = predictions3.unsqueeze_(0)
+                        predictions3 = torch.nn.Softmax(dim=2)(predictions3)
+                    else:
+                        predictions1, predictions2, predictions3 = trainer.model(input_x)
                 elif task == "tools":
                     if network == "LSTM" or network == "GRU":
-                        predictions2, predictions3 = self.model(input_x, torch.tensor([features.shape[1]]))
+                        predictions2, predictions3 = trainer.model(input_x, torch.tensor([features.shape[1]]))
                         predictions2 = predictions2.unsqueeze_(0)
                         predictions2 = torch.nn.Softmax(dim=2)(predictions2)
                         predictions3 = predictions3.unsqueeze_(0)
@@ -151,13 +164,23 @@ def conf_mat_calc(all_recogs,all_gts,labels):
             flatten_recogs += seq.tolist()
 
     distribution = confusion_matrix(flatten_gt, flatten_recogs, labels=labels)
-    distribution = distribution / np.sum(distribution)
+    # print(distribution)
+    # distribution = (distribution.transpose() / np.sum(distribution,1)).transpose()
+    distribution = (distribution.transpose() / np.sum(distribution)).transpose()
+
+
+    conf_mat_draw(distribution, labels)
+
+def conf_mat_draw(distribution,labels):
     if "G0" in labels:
         ax = sns.heatmap(distribution, annot=True,
                          xticklabels=['no gesture', "needle passing", "pull the suture", "instrument tie", "lay the knot",
                                       "cut the suture"],
                          yticklabels=['no gesture', "needle passing", "pull the suture", "instrument tie", "lay the knot",
                                       "cut the suture"], fmt='.3f', cmap=sns.color_palette("mako"))
+        plt.xticks(rotation=45)
+
+
     else:
         ax = sns.heatmap(distribution, annot=True,
                          xticklabels=["no tool", "needle driver", "forceps",
@@ -165,46 +188,65 @@ def conf_mat_calc(all_recogs,all_gts,labels):
                          yticklabels=["no tool", "needle driver", "forceps",
                                       "scissors"], fmt='.3f', cmap=sns.color_palette("mako"))
 
-
+    ax.set_xlabel('Predicted label',fontsize=12)
+    ax.set_ylabel('True label',fontsize=12)
     plt.show()
 
-    print()
 
-
+def findToolConditiondOnGesture(all_recogs_tools,all_gts_tools,all_gts_gestures):
+    gt_pairs_total = 0
+    correct_pairs =0
+    total =0
+    for split_tools,split_gts_tools,split_gts_gestures in zip(all_recogs_tools,all_gts_tools,all_gts_gestures):
+        for recog_tool,gt_tool,gt_gestures in zip(split_tools,split_gts_tools,split_gts_gestures):
+            min_len = min(len(recog_tool),len(gt_tool),len(gt_gestures))
+            recog_tool = recog_tool[:min_len]
+            gt_tool = gt_tool[:min_len]
+            gt_gestures = gt_gestures[:min_len]
+            for index,(gesture,tool) in enumerate(zip(gt_gestures,gt_tool)):
+                total +=1
+                if gesture == 'G5' and tool == "T1":
+                    gt_pairs_total += 1
+                    if tool == recog_tool[index]:
+                        correct_pairs += 1
+    print("% of success among the relevant frames")
+    print(100*(correct_pairs)/gt_pairs_total)
+    print("% relevant frames")
+    print(100*(gt_pairs_total)/total)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--experiment_name', default="29.10.2021 20:53:46  task:multi-taks splits: all net: TCN-LSTM is Offline: True")
 
     parser.add_argument('--dataset', choices=['APAS'], default="APAS")
-    parser.add_argument('--task', choices=['gestures', 'tools', 'multi-taks'], default="multi-taks")
+    parser.add_argument('--task', choices=['gestures', 'tools', 'multi-taks'], default="tools")
     parser.add_argument('--network',
                         choices=['MS-TCN2', 'MS-TCN2_IUR', 'LSTM', 'GRU', 'MS-LSTM-TCN', 'MS-TCN-LSTM', 'MS-GRU-TCN', 'MS-TCN-GRU'],
-                        default="MS-TCN-LSTM")
-    parser.add_argument('--split', choices=['0', '1', '2', '3', '4', 'all'], default='2')
+                        default="MS-TCN2")
+    parser.add_argument('--split', choices=['0', '1', '2', '3', '4', 'all'], default='all')
     # features_dim for jigwaw 14  APAS 36
     parser.add_argument('--features_dim', default='36', type=int)
-    #[164,244,192,231,224]
-    parser.add_argument('--list_of_num_epochs', default=[192], type=list)
     # Architectuyre
-    parser.add_argument('--num_f_maps', default='64', type=int)
 
-    parser.add_argument('--num_layers_PG', default=13, type=int)
-    parser.add_argument('--num_layers_R', default=13, type=int)
     parser.add_argument('--filtered_data', default=True, type=bool)
     parser.add_argument('--normalization', choices=['Min-max', 'Standard', 'samplewise_SD', 'none'], default='Standard',
                         type=str)
-    parser.add_argument('--num_R', default=3, type=int)
-    parser.add_argument('--loss_tau', default=16, type=float)
-    parser.add_argument('--loss_lambda', default=0.5, type=float)
     parser.add_argument('--offline_mode', default=True, type=bool)
     parser.add_argument('--project', default="Offline RNN nets Sensor paper Final", type=str)
     parser.add_argument('--use_gpu_num', default="0", type=str)
-
+    parser.add_argument('--specific_seq', default="", type=str)
+    parser.add_argument('--dropout', default=0, type=float)
+    eval_sampling = 5
     args = parser.parse_args()
+    num_layers_PG = 0
+    num_layers_R = 0
+    num_R = 0
+    num_f_maps = 0
+    hidden_dim_rnn = 0
+    num_layers_rnn = 0
+
     print(args)
-    seed = 1538574472
+    seed = 1642708740
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -212,14 +254,11 @@ if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = args.use_gpu_num
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # use the full temporal resolution @ 30Hz
-    if args.network in ["GRU", "LSTM", "MS-LSTM", "MS-GRU"]:
-        sample_rate = 6
-        bz = 1
+    bz =1
+    offline_mode = True
+    features_dim = 36
 
-    else:
-        sample_rate = 1
-        bz = 1
+    # use the full temporal resolution @ 30Hz
 
     list_of_splits = []
     if len(args.split) == 1:
@@ -230,150 +269,294 @@ if __name__ == "__main__":
     else:
         list_of_splits = list(range(0, 8))
 
-    num_epoch_list = args.list_of_num_epochs
-    assert len(num_epoch_list) == len(list_of_splits)
-    for i,epoch in enumerate(num_epoch_list):
-        num_epoch_list[i] = num_epoch_list[i] + 1
-
-    features_dim = args.features_dim
-    offline_mode = args.offline_mode
-    num_layers_PG = args.num_layers_PG
-    num_layers_R = args.num_layers_R
-    num_R = args.num_R
-    num_f_maps = args.num_f_maps
-    experiment_name = args.experiment_name
-
-    summaries_dir = "./summaries/" + args.dataset + "/" + experiment_name
-    all_recogs1=[]
-    all_recogs2=[]
-    all_recogs3=[]
-    all_gt1=[]
-    all_gt2=[]
-    all_gt3=[]
 
 
-    for split_num in list_of_splits:
-        if args.split == "all":
-            num_epoch = num_epoch_list[split_num]
-        else:
-            num_epoch = num_epoch_list[0]
 
-        print("split number: " + str(split_num))
-        args.split = str(split_num)
+    if args.network == "GRU":
+        hidden_dim_rnn =128
+        num_layers_rnn =3
+        sample_rate = 4
+        if args.task == "multi-taks":
+            list_of_experiments = ["08.02.2022 15:11:41  task:multi-taks splits: all net: GRU is Offline: True",
+                                         "08.02.2022 15:10:13  task:multi-taks splits: all net: GRU is Offline: True",
+                                         "08.02.2022 15:08:52  task:multi-taks splits: all net: GRU is Offline: True",
+                                         "08.02.2022 15:07:30  task:multi-taks splits: all net: GRU is Offline: True",
+                                         "08.02.2022 15:05:02  task:multi-taks splits: all net: GRU is Offline: True",
+                                         "08.02.2022 15:03:32  task:multi-taks splits: all net: GRU is Offline: True",
+                                         "08.02.2022 15:02:02  task:multi-taks splits: all net: GRU is Offline: True",
+                                         "08.02.2022 15:00:36  task:multi-taks splits: all net: GRU is Offline: True"]
 
-        folds_folder = "./data/" + args.dataset + "/folds"
-        if args.dataset == "APAS":
-            if args.filtered_data:
-                features_path = "./data/" + args.dataset + "/kinematics_with_filtration_npy/"
+        elif args.task == "tools":
+            list_of_experiments = ["08.02.2022 14:00:25  task:tools splits: all net: GRU is Offline: True",
+                                   "08.02.2022 14:01:56  task:tools splits: all net: GRU is Offline: True",
+                                   "08.02.2022 14:03:28  task:tools splits: all net: GRU is Offline: True",
+                                   "08.02.2022 14:04:57  task:tools splits: all net: GRU is Offline: True",
+                                   "08.02.2022 14:06:40  task:tools splits: all net: GRU is Offline: True",
+                                   "08.02.2022 14:09:10  task:tools splits: all net: GRU is Offline: True",
+                                   "08.02.2022 14:11:09  task:tools splits: all net: GRU is Offline: True",
+                                   "08.02.2022 14:12:49  task:tools splits: all net: GRU is Offline: True"]
+        elif args.task == "gestures":
+            # list_of_experiments = ["24.01.2022 20:57:14  task:gestures splits: all net: GRU is Offline: True,"
+            # "24.01.2022 20:52:25  task:gestures splits: all net: GRU is Offline: True"]
+
+            list_of_experiments = ["24.01.2022 20:50:12  task:gestures splits: all net: GRU is Offline: True",
+                                   "24.01.2022 20:52:25  task:gestures splits: all net: GRU is Offline: True",
+                                   "24.01.2022 20:51:21  task:gestures splits: all net: GRU is Offline: True",
+                                   "24.01.2022 20:53:16  task:gestures splits: all net: GRU is Offline: True",
+                                   "24.01.2022 20:54:08  task:gestures splits: all net: GRU is Offline: True",
+                                   "24.01.2022 20:55:07  task:gestures splits: all net: GRU is Offline: True",
+                                   "24.01.2022 20:56:00  task:gestures splits: all net: GRU is Offline: True",
+                                   "24.01.2022 20:57:14  task:gestures splits: all net: GRU is Offline: True"]
+
+    elif args.network == "MS-TCN2":
+        num_layers_PG = 13
+        num_layers_R = 13
+        num_R = 1
+        num_f_maps = 128
+        sample_rate = 1
+
+        if args.task == "multi-taks":
+            list_of_experiments = ["07.02.2022 19:31:12  task:multi-taks splits: all net: MS-TCN2 is Offline: True",
+                                   "07.02.2022 19:33:32  task:multi-taks splits: all net: MS-TCN2 is Offline: True",
+                                   "07.02.2022 19:36:06  task:multi-taks splits: all net: MS-TCN2 is Offline: True",
+                                   "07.02.2022 19:37:16  task:multi-taks splits: all net: MS-TCN2 is Offline: True",
+                                   "07.02.2022 19:38:31  task:multi-taks splits: all net: MS-TCN2 is Offline: True",
+                                   "07.02.2022 19:39:29  task:multi-taks splits: all net: MS-TCN2 is Offline: True",
+                                   "07.02.2022 19:40:37  task:multi-taks splits: all net: MS-TCN2 is Offline: True",
+                                   "07.02.2022 19:41:45  task:multi-taks splits: all net: MS-TCN2 is Offline: True"]
+        elif args.task == "tools":
+            list_of_experiments = ["08.02.2022 09:11:38  task:tools splits: all net: MS-TCN2 is Offline: True",
+                                   "08.02.2022 09:13:21  task:tools splits: all net: MS-TCN2 is Offline: True",
+                                   "08.02.2022 09:14:34  task:tools splits: all net: MS-TCN2 is Offline: True",
+                                   "08.02.2022 09:15:56  task:tools splits: all net: MS-TCN2 is Offline: True",
+                                   "08.02.2022 09:18:00  task:tools splits: all net: MS-TCN2 is Offline: True",
+                                   "08.02.2022 09:21:46  task:tools splits: all net: MS-TCN2 is Offline: True",
+                                   "08.02.2022 09:23:06  task:tools splits: all net: MS-TCN2 is Offline: True",
+                                   "08.02.2022 09:24:01  task:tools splits: all net: MS-TCN2 is Offline: True"]
+        elif args.task == "gestures":
+            # list_of_experiments = ["20.01.2022 21:59:00  task:gestures splits: all net: MS-TCN2 is Offline: True",
+            #                        "20.01.2022 22:01:37  task:gestures splits: all net: MS-TCN2 is Offline: True"]
+
+
+            list_of_experiments = ["20.01.2022 21:59:00  task:gestures splits: all net: MS-TCN2 is Offline: True",
+                                   "20.01.2022 22:01:37  task:gestures splits: all net: MS-TCN2 is Offline: True",
+                                   "20.01.2022 22:03:33  task:gestures splits: all net: MS-TCN2 is Offline: True",
+                                   "20.01.2022 22:04:57  task:gestures splits: all net: MS-TCN2 is Offline: True",
+                                   "20.01.2022 22:06:03  task:gestures splits: all net: MS-TCN2 is Offline: True",
+                                   "20.01.2022 22:07:23  task:gestures splits: all net: MS-TCN2 is Offline: True",
+                                   "20.01.2022 22:08:48  task:gestures splits: all net: MS-TCN2 is Offline: True",
+                                   "20.01.2022 22:10:12  task:gestures splits: all net: MS-TCN2 is Offline: True"]
+
+
+    elif args.network == "LSTM":
+        hidden_dim_rnn =256
+        num_layers_rnn =3
+        sample_rate = 5
+        if args.task == "multi-taks":
+
+            list_of_experiments = ["08.02.2022 16:36:44  task:multi-taks splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 16:38:11  task:multi-taks splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 16:40:41  task:multi-taks splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 16:41:56  task:multi-taks splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 16:43:15  task:multi-taks splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 16:45:04  task:multi-taks splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 16:46:38  task:multi-taks splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 20:39:57  task:multi-taks splits: all net: LSTM is Offline: True"]
+        elif args.task == "tools":
+            list_of_experiments = ["08.02.2022 22:10:08  task:tools splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 22:11:45  task:tools splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 22:13:21  task:tools splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 22:16:28  task:tools splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 22:17:46  task:tools splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 22:25:14  task:tools splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 22:26:59  task:tools splits: all net: LSTM is Offline: True",
+                                   "08.02.2022 22:30:01  task:tools splits: all net: LSTM is Offline: True"]
+        elif args.task == "gestures":
+
+            list_of_experiments = ["23.01.2022 13:29:18  task:gestures splits: all net: LSTM is Offline: True",
+                                   "23.01.2022 13:29:16  task:gestures splits: all net: LSTM is Offline: True",
+                                   "23.01.2022 13:29:03  task:gestures splits: all net: LSTM is Offline: True",
+                                   "23.01.2022 13:28:31  task:gestures splits: all net: LSTM is Offline: True",
+                                   "23.01.2022 13:28:29  task:gestures splits: all net: LSTM is Offline: True",
+                                   "23.01.2022 13:28:25  task:gestures splits: all net: LSTM is Offline: True",
+                                   "23.01.2022 13:28:10  task:gestures splits: all net: LSTM is Offline: True",
+                                   "23.01.2022 13:25:15  task:gestures splits: all net: LSTM is Offline: True"]
+
+    else:
+        raise NotImplementedError
+
+    all_recogs1 = []
+    all_recogs2 = []
+    all_recogs3 = []
+    all_gt1 = []
+    all_gt2 = []
+    all_gt3 = []
+    list_of_names=[]
+    seed_id =[]
+    split_id=[]
+
+    for k,experiment_name in enumerate(list_of_experiments):
+
+        summaries_dir = "./summaries/" + args.dataset + "/" + experiment_name
+
+
+        for split_num in list_of_splits:
+
+            print("split number: " + str(split_num))
+            args.split = str(split_num)
+
+            folds_folder = "./data/" + args.dataset + "/folds"
+            if args.dataset == "APAS":
+                if args.filtered_data:
+                    features_path = "./data/" + args.dataset + "/kinematics_with_filtration_npy/"
+                else:
+                    features_path = "./data/" + args.dataset + "/kinematics_without_filtration_npy/"
             else:
-                features_path = "./data/" + args.dataset + "/kinematics_without_filtration_npy/"
-        else:
-            features_path = "./data/" + args.dataset + "/kinematics_npy/"
+                features_path = "./data/" + args.dataset + "/kinematics_npy/"
 
-        gt_path_gestures = "./data/" + args.dataset + "/transcriptions_gestures/"
-        gt_path_tools_left = "./data/" + args.dataset + "/transcriptions_tools_left/"
-        gt_path_tools_right = "./data/" + args.dataset + "/transcriptions_tools_right/"
+            gt_path_gestures = "./data/" + args.dataset + "/transcriptions_gestures/"
+            gt_path_tools_left = "./data/" + args.dataset + "/transcriptions_tools_left/"
+            gt_path_tools_right = "./data/" + args.dataset + "/transcriptions_tools_right/"
 
-        mapping_gestures_file = "./data/" + args.dataset + "/mapping_gestures.txt"
-        mapping_tool_file = "./data/" + args.dataset + "/mapping_tools.txt"
+            mapping_gestures_file = "./data/" + args.dataset + "/mapping_gestures.txt"
+            mapping_tool_file = "./data/" + args.dataset + "/mapping_tools.txt"
 
-        model_dir = "./models/" + args.dataset + "/" + experiment_name + "/split_" + args.split
+            model_dir = "./models/" + args.dataset + "/" + experiment_name + "/split" + args.split
 
-        file_ptr = open(mapping_gestures_file, 'r')
-        actions = file_ptr.read().split('\n')[:-1]
-        file_ptr.close()
-        actions_dict_gestures = dict()
-        for a in actions:
-            actions_dict_gestures[a.split()[1]] = int(a.split()[0])
-        num_classes_tools = 0
-        actions_dict_tools = dict()
-        if args.dataset == "APAS":
-            file_ptr = open(mapping_tool_file, 'r')
+            file_ptr = open(mapping_gestures_file, 'r')
             actions = file_ptr.read().split('\n')[:-1]
             file_ptr.close()
+            actions_dict_gestures = dict()
             for a in actions:
-                actions_dict_tools[a.split()[1]] = int(a.split()[0])
-            num_classes_tools = len(actions_dict_tools)
+                actions_dict_gestures[a.split()[1]] = int(a.split()[0])
+            num_classes_tools = 0
+            actions_dict_tools = dict()
+            if args.dataset == "APAS":
+                file_ptr = open(mapping_tool_file, 'r')
+                actions = file_ptr.read().split('\n')[:-1]
+                file_ptr.close()
+                for a in actions:
+                    actions_dict_tools[a.split()[1]] = int(a.split()[0])
+                num_classes_tools = len(actions_dict_tools)
 
-        num_classes_gestures = len(actions_dict_gestures)
+            num_classes_gestures = len(actions_dict_gestures)
 
-        if args.task == "gestures":
-            num_classes_list = [num_classes_gestures]
-        elif args.dataset == "APAS" and args.task == "tools":
-            num_classes_list = [num_classes_tools, num_classes_tools]
-        elif args.dataset == "APAS" and args.task == "multi-taks":
-            num_classes_list = [num_classes_gestures, num_classes_tools, num_classes_tools]
-
-        trainer = Trainer(num_layers_PG, num_layers_R, num_R, num_f_maps, features_dim, num_classes_list,
-                          offline_mode=offline_mode, tau=0, lambd=0, task=args.task, device=device,
-                          network=args.network, debagging=True)
-
-        batch_gen = BatchGenerator(num_classes_gestures, num_classes_tools, actions_dict_gestures, actions_dict_tools,
-                                   features_path, split_num, folds_folder, gt_path_gestures, gt_path_tools_left,
-                                   gt_path_tools_right, sample_rate=sample_rate, normalization=args.normalization,
-                                   task=args.task)
-        eval_dict = {"features_path": features_path, "actions_dict_gestures": actions_dict_gestures,
-                     "actions_dict_tools": actions_dict_tools, "device": device, "sample_rate": sample_rate,
-                     "eval_rate": 1,
-                     "gt_path_gestures": gt_path_gestures, "gt_path_tools_left": gt_path_tools_left,
-                     "gt_path_tools_right": gt_path_tools_right, "task": args.task}
-
-
-        list_of_vids = batch_gen.list_of_valid_examples
-
-        recognition1_list, recognition2_list, recognition3_list = predict(trainer, model_dir, features_path, list_of_vids, num_epoch, actions_dict_gestures,actions_dict_tools, device,
-                        sample_rate,args.task,args.network)
-
-        if args.task == "multi-taks" or args.task == "gestures":
-            print("gestures results")
-            gt_list_1 = get_gt(ground_truth_path=gt_path_gestures,
-                                              list_of_videos=list_of_vids)
-            for i in range(len(gt_list_1)):
-                min_len = min(len(gt_list_1[i]),len(recognition1_list[i]))
-                gt_list_1[i] = gt_list_1[i][:min_len]
-                recognition1_list[i] = recognition1_list[i][:min_len]
-
-            all_recogs1.append(recognition1_list)
-            all_gt1.append(gt_list_1)
+            if args.task == "gestures":
+                num_classes_list = [num_classes_gestures]
+            elif args.dataset == "APAS" and args.task == "tools":
+                num_classes_list = [num_classes_tools, num_classes_tools]
+            elif args.dataset == "APAS" and args.task == "multi-taks":
+                num_classes_list = [num_classes_gestures, num_classes_tools, num_classes_tools]
 
 
 
-        if args.task == "multi-taks" or args.task == "tools":
-            gt_list_2 = get_gt(ground_truth_path=gt_path_tools_right,list_of_videos=list_of_vids)
+            trainer = Trainer(num_layers_PG, num_layers_R, num_R, num_f_maps, features_dim, num_classes_list,
+                              offline_mode=offline_mode, tau=0, lambd=0, task=args.task, device=device,
+                              network=args.network, debagging=True,hidden_dim_rnn=hidden_dim_rnn,
+                              num_layers_rnn=num_layers_rnn,dropout=args.dropout)
 
-            for i in range(len(gt_list_2)):
-                min_len = min(len(gt_list_2[i]),len(recognition2_list[i]))
-                gt_list_2[i] = gt_list_2[i][:min_len]
-                recognition2_list[i] = recognition2_list[i][:min_len]
+            batch_gen = BatchGenerator(num_classes_gestures, num_classes_tools, actions_dict_gestures, actions_dict_tools,
+                                       features_path, split_num, folds_folder, gt_path_gestures, gt_path_tools_left,
+                                       gt_path_tools_right, sample_rate=sample_rate, normalization=args.normalization,
+                                       task=args.task)
+            eval_dict = {"features_path": features_path, "actions_dict_gestures": actions_dict_gestures,
+                         "actions_dict_tools": actions_dict_tools, "device": device, "sample_rate": sample_rate,
+                         "eval_rate": 1,
+                         "gt_path_gestures": gt_path_gestures, "gt_path_tools_left": gt_path_tools_left,
+                         "gt_path_tools_right": gt_path_tools_right, "task": args.task}
 
 
+            list_of_vids = batch_gen.list_of_test_examples
+            list_of_names += list_of_vids
+            seed_id += [k]* len(list_of_vids)
+            split_id += [split_num]* len(list_of_vids)
 
-            gt_list_3 = get_gt(ground_truth_path=gt_path_tools_left,
-                                              list_of_videos=list_of_vids)
-
-            for i in range(len(gt_list_3)):
-                min_len = min(len(gt_list_3[i]),len(recognition3_list[i]))
-                gt_list_3[i] = gt_list_3[i][:min_len]
-                recognition3_list[i] = recognition3_list[i][:min_len]
-
-            all_recogs2.append(recognition2_list)
-            all_recogs3.append(recognition3_list)
-            all_gt2.append(gt_list_2)
-            all_gt3.append(gt_list_3)
-
-    plot_seq_gestures(all_recogs1, all_gt1, "gesture", True)
-    plot_seq_gestures(all_recogs2, all_gt2, "right hand", True)
-    plot_seq_gestures(all_recogs3, all_gt3, "left hand", True)
-    plot_seq_gestures(all_recogs1, all_gt1, "gesture", False)
-    plot_seq_gestures(all_recogs2, all_gt2, "right hand", False)
-    plot_seq_gestures(all_recogs3, all_gt3, "left hand", False)
+            if args.specific_seq != "":
+                if args.specific_seq+".csv" not in list_of_vids:
+                    continue
+                else:
+                    list_of_vids = [args.specific_seq+".csv"]
 
 
 
+            recognition1_list, recognition2_list, recognition3_list = predict(trainer, model_dir, features_path, list_of_vids, actions_dict_gestures,actions_dict_tools, device,
+                            sample_rate,args.task,args.network)
 
-    # conf1 = conf_mat_calc(all_recogs1,all_gt1,["G0","G1","G2","G3","G4","G5"])
-    # conf2 = conf_mat_calc(all_recogs2,all_gt2,["T0","T1","T2","T3"])
-    # conf3 = conf_mat_calc(all_recogs3,all_gt3,["T0","T1","T2","T3"])
+            if args.task == "multi-taks" or args.task == "gestures":
+                print("gestures results")
+                gt_list_1 = get_gt(ground_truth_path=gt_path_gestures,
+                                                  list_of_videos=list_of_vids)
+                for i in range(len(gt_list_1)):
+                    min_len = min(len(gt_list_1[i]),len(recognition1_list[i]))
+                    gt_list_1[i] = gt_list_1[i][:min_len]
+                    recognition1_list[i] = recognition1_list[i][:min_len]
+
+                all_recogs1.append(recognition1_list)
+                all_gt1.append(gt_list_1)
+
+
+            if args.task == "multi-taks" or args.task == "tools":
+                gt_list_2 = get_gt(ground_truth_path=gt_path_tools_right,list_of_videos=list_of_vids)
+
+                for i in range(len(gt_list_2)):
+                    min_len = min(len(gt_list_2[i]),len(recognition2_list[i]))
+                    gt_list_2[i] = gt_list_2[i][:min_len]
+                    recognition2_list[i] = recognition2_list[i][:min_len]
+
+
+
+                gt_list_3 = get_gt(ground_truth_path=gt_path_tools_left,
+                                                  list_of_videos=list_of_vids)
+
+                for i in range(len(gt_list_3)):
+                    min_len = min(len(gt_list_3[i]),len(recognition3_list[i]))
+                    gt_list_3[i] = gt_list_3[i][:min_len]
+                    recognition3_list[i] = recognition3_list[i][:min_len]
+
+                all_recogs2.append(recognition2_list)
+                all_recogs3.append(recognition3_list)
+                all_gt2.append(gt_list_2)
+                all_gt3.append(gt_list_3)
+    metadata= {"procedure nnme":list_of_names,"split":split_id,"seed id":seed_id}
+
+    # if args.task == "multi-taks":
+    #     findToolConditiondOnGesture(all_recogs3, all_gt3, all_gt1)
+    if args.task == "multi-taks" or args.task =="gestures":
+        results_gesture = metric_calculation_analysis(all_gt1, all_recogs1,eval_sampling)
+        metadata.update(results_gesture)
+        for i in range(len(all_gt1)):
+            for j in range(len(all_gt1[i])):
+                all_gt1[i][j] = all_gt1[i][j][::eval_sampling]
+                all_recogs1[i][j] = all_recogs1[i][j][::eval_sampling]
+
+        plot_seq_gestures(all_recogs1, all_gt1, "gesture", True)
+        plot_seq_gestures(all_recogs1, all_gt1, "gesture", False)
+        conf_mat_calc(all_recogs1, all_gt1, ["G0", "G1", "G2", "G3", "G4", "G5"])
+
+    if args.task == "multi-taks" or args.task =="tools":
+        results_right = metric_calculation_analysis(all_gt2, all_recogs2,eval_sampling,suffix=" right")
+        results_left = metric_calculation_analysis(all_gt3, all_recogs3,eval_sampling,suffix=" left")
+        metadata.update(results_right)
+        metadata.update(results_left)
+        for i in range(len(all_gt2)):
+            for j in range(len(all_gt2[i])):
+                all_gt2[i][j] = all_gt2[i][j][::eval_sampling]
+                all_recogs2[i][j] = all_recogs2[i][j][::eval_sampling]
+
+        for i in range(len(all_gt3)):
+            for j in range(len(all_gt3[i])):
+                all_gt3[i][j] = all_gt3[i][j][::eval_sampling]
+                all_recogs3[i][j] = all_recogs3[i][j][::eval_sampling]
+
+        plot_seq_gestures(all_recogs2, all_gt2, "right hand", True)
+        plot_seq_gestures(all_recogs2, all_gt2, "right hand", False)
+        plot_seq_gestures(all_recogs3, all_gt3, "left hand", True)
+        plot_seq_gestures(all_recogs3, all_gt3, "left hand", False)
+        conf_mat_calc(all_recogs2,all_gt2,["T0","T1","T2","T3"])
+        conf_mat_calc(all_recogs3,all_gt3,["T0","T1","T2","T3"])
+    df =pd.DataFrame(metadata)
+    df.to_csv(args.network +" " + args.task + ".csv")
+
 
 
 
