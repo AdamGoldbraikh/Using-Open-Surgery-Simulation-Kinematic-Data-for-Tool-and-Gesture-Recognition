@@ -27,3 +27,25 @@ python train_experiment.py
 ```
 The visualization result is located in `summaries/APAS/experiment_name`,
 Where `experiment_name` is a string describing the experiment: the network type, whether it is online, etc.
+
+## Citation
+```
+@article{DBLP:journals/cars/GoldbraikhVPL22,
+  author    = {Adam Goldbraikh and
+               Tomer Volk and
+               Carla M. Pugh and
+               Shlomi Laufer},
+  title     = {Using open surgery simulation kinematic data for tool and gesture
+               recognition},
+  journal   = {Int. J. Comput. Assist. Radiol. Surg.},
+  volume    = {17},
+  number    = {6},
+  pages     = {965--979},
+  year      = {2022},
+  url       = {https://doi.org/10.1007/s11548-022-02615-1},
+  doi       = {10.1007/s11548-022-02615-1},
+  timestamp = {Thu, 02 Jun 2022 16:58:49 +0200},
+  biburl    = {https://dblp.org/rec/journals/cars/GoldbraikhVPL22.bib},
+  bibsource = {dblp computer science bibliography, https://dblp.org}
+}
+```
