@@ -18,7 +18,8 @@ termcolor==1.1.0
 We recommend to use conda to deploy the environment
 
 ## Dataset
-Will be published soon...
+[Data request](https://docs.google.com/forms/d/e/1FAIpQLSeKvalfDwLBkxh1PgrVH14wu2a8UXl7xi0bSAYEU0z9yPrdUA/viewform?usp=sf_link/)
+
 
 ## Run the code
 To train and test the model on all the splits run:
